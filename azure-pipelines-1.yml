@@ -8,7 +8,6 @@ jobs:
 - job: "deploy"
   displayName: "Maven Build, Docker Push, and Deploy"
   steps:
-
   # Maven Build Step
   - task: Maven@4
     inputs:
