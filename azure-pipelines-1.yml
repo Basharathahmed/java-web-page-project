@@ -1,72 +1,70 @@
-# Maven package Java project Web App to Linux on Azure
-# Build your Java project and deploy it to Azure as a Linux web app
-# Add steps that analyze code, save build artifacts, deploy, and more:
-# https://docs.microsoft.com/azure/devops/pipelines/languages/java
-
 trigger:
 - main
 
-variables:
+pool:
+  vmImage: 'ubuntu-latest'
 
-  # Azure Resource Manager connection created during pipeline creation
-  azureSubscription: '2a0bd960-432f-44a1-b8e0-2bea50433c64'
+jobs:
+- job: "deploy"
+  displayName: "Maven Build, Docker Push, and Deploy"
+  steps:
 
-  # Web app name
-  webAppName: 'alternate-app'
+  # Maven Build Step
+  - task: Maven@4
+    inputs:
+      mavenPomFile: 'pom.xml'
+      mavenOptions: '-Xmx3072m'
+      goals: 'package'
+      publishJUnitResults: true
+      testResultsFiles: '**/surefire-reports/TEST-*.xml'
+      options: ''
+      javaHomeOption: 'JDKVersion'
+      mavenVersionOption: 'Default'
+      mavenAuthenticateFeed: false
+      effectivePomSkip: false
+      sonarQubeRunAnalysis: false
+    displayName: 'Build with Maven'
+    continueOnError: false
 
-  # Environment name
-  environmentName: 'alternate-app'
+  # Build and Push Docker Image
+  - task: Docker@2
+    inputs:
+      containerRegistry: 'aks-cluster-server'  # Ensure this matches your Docker Registry service connection name
+      repository: '<your-docker-image-name>/my-java-web-app'
+      command: 'buildAndPush'
+      Dockerfile: '**/Dockerfile'
+      tags: 'latest'
+      
+    displayName: 'Build and Push Docker Image'
 
-  # Agent VM image name
-  vmImageName: 'ubuntu-latest'
+  # Deploy to AKS
+  - task: KubernetesManifest@1
+    inputs:
+      action: 'deploy'
+      connectionType: 'azureResourceManager'
+      azureSubscriptionConnection: '$(MyAzureServiceConnection)'  # Ensure this matches your Azure Resource Manager service connection name
+      azureResourceGroup: 'AKS-Cluster-RG'
+      kubernetesCluster: 'training-aks-cluster'
+      manifests: 'deployment.yaml'
+    displayName: 'Deploy to AKS'
 
-stages:
-- stage: Build
-  displayName: Build stage
-  jobs:
-  - job: MavenPackageAndPublishArtifacts
-    displayName: Maven Package and Publish Artifacts
-    pool:
-      vmImage: $(vmImageName)
+  # Azure CLI Commands
+  - task: AzureCLI@2
+    inputs:
+      azureSubscription: '<your-service-connection-name>'  # Ensure this is the correct service connection name
+      scriptType: 'bash'  # Changed to 'bash' for Linux agents
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        echo "Logging in to Azure..."
+        az login 
 
-    steps:
-    - task: Maven@3
-      displayName: 'Maven Package'
-      inputs:
-        mavenPomFile: 'pom.xml'
-        goals: 'clean package'
-        options: '-DskipTests=true'
-        publishJUnitResults: true
-        testResultsFiles: '**/surefire-reports/TEST-*.xml'
+        echo "Logging in to Azure Container Registry..."
+        az acr login --name akscr01sample
+        
+        echo "Fetching AKS credentials..."
+        az aks get-credentials --resource-group AKS-Cluster-RG --name training-aks-cluster
 
-    - task: CopyFiles@2
-      displayName: 'Copy Files to artifact staging directory'
-      inputs:
-        SourceFolder: '$(System.DefaultWorkingDirectory)'
-        Contents: '**/target/*.?(war|jar)'
-        TargetFolder: '$(Build.ArtifactStagingDirectory)'
-
-    - publish: '$(Build.ArtifactStagingDirectory)'
-      artifact: 'drop'
-
-- stage: Deploy
-  displayName: Deploy stage
-  dependsOn: Build
-  condition: succeeded()
-  jobs:
-  - deployment: DeployLinuxWebApp
-    displayName: Deploy Linux Web App
-    environment: $(environmentName)
-    pool:
-      vmImage: $(vmImageName)
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-          - task: AzureWebApp@1
-            displayName: 'Azure Web App Deploy: alternate-app'
-            inputs:
-              azureSubscription: $(azureSubscription)
-              appType: 'webAppLinux'
-              appName: $(webAppName)
-              package: '$(Pipeline.Workspace)/drop/**/target/*.?(war|jar)'
+        echo "Applying Kubernetes manifests..."
+        kubectl apply -f deployment.yaml
+        
+    displayName: 'Azure CLI Commands'
